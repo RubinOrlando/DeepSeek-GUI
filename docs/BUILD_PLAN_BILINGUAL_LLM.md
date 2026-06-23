@@ -27,10 +27,10 @@ measurement shows a real gap that RAG + SFT doesn't close.
 7. Evaluation sample sizes bumped to a statistically meaningful floor (see Global Requirements); GDPR retention policy added to the user-memory store (Phase 0.6).
 8. Phase 4: Gemma 4 26B A4B MoE removed as an *interactive* production candidate (kept only as a non-interactive research footnote).
 
-**Deferred / not actioned** (reviewed, intentionally excluded from the 8 — flagging in case you want them added):
+**Plus, after PR review:** a QLoRA fallback for Phase 1 if full-model CPT doesn't fit in 12 GB (1.3), VRAM guardrails for Phase 2b's larger G (2b.3), and two of Okafor's safety items that were initially deferred — DPO pairs raised to 5,000 Dutch pairs (3.2) and a dedicated red-team pass added distinct from the integration test (3.4) — since this plan does cover a counseling domain.
 
-- Okafor: 500–1000 DPO pairs is too few for counseling-domain alignment (wants 5k, Dutch). Marked "certain" by the reviewer but **not** in the net-8 list you gave me. Not applied — confirm if this should be in scope.
-- Okafor: "30 mixed tasks is not a safety evaluation," red-teaming is missing entirely. Same status — flagged, not applied.
+**Deferred / not actioned** (reviewed, intentionally excluded — flagging in case you want them added):
+
 - Chen's KV-cache recount (claiming 40 KV-heads): this is the reviewer being wrong, not the plan. Qwen3-14B uses GQA with 8 KV-heads, not 40 query-heads; the original 11.1 GB @ 32k Q8 KV figure stands. No change made.
 - Chen: 15% VRAM overhead buffer (12 GB → 10.2 GB effective), and benchmarking KoboldCpp as an alternative to llama.cpp at 32k context — sensible, but left as an implementation note (Phase 4) rather than a numbers rewrite, since it doesn't change any go/no-go threshold.
 - De Vries: cultural misalignment — real, low priority for v1.
@@ -124,9 +124,9 @@ Deliverable: Qwen3-8B with long-CoT SFT + RLVR. MATH 80–85%+, GSM8K 90%+. Reli
 Goal: add self-consistency, DPO for subjective tasks, citations wired into RAG.
 
 3.1 Self-consistency: N=5 inference passes per hard problem (temp 0.8), majority-vote on extracted answers. Test on MATH hold-out (≥500 samples where available, decontaminated — bumped from the original 20-sample test per Global Requirements): expect +3–8pp.
-3.2 DPO (subjective tasks only): 500–1000 preference pairs for counseling/safety domains (chosen vs rejected). LR 5e-6, 1 epoch. Merge + quantize. *(Okafor flagged this as too few for counseling specifically, recommending 5k Dutch pairs — not in the net-8, not applied here; revisit if counseling-domain quality is a launch blocker.)*
+3.2 DPO (subjective tasks only): **5,000 Dutch preference pairs** for counseling/safety domains (chosen vs rejected) — raised from the original 500–1000, which Okafor flagged as too few to align a counseling-capable model. LR 5e-6, 1 epoch. Merge + quantize.
 3.3 Citation grounding: force LLM JSON output with doc_id citations. Eval: 20 retrieval tasks, target 80%+ cited docs relevant.
-3.4 Integration test: 30 mixed tasks (10 reasoning, 10 retrieval, 10 counseling). Measure latency, accuracy, citation quality, safety. *(Okafor: this is not a substitute for a real safety/red-team evaluation — flagged, not expanded here; revisit before any external release.)*
+3.4 Integration test: 30 mixed tasks (10 reasoning, 10 retrieval, 10 counseling). Measure latency, accuracy, citation quality, safety. **This is not a safety sign-off.** Add a dedicated red-team pass before any external release: adversarial prompts targeting the counseling/safety domain specifically (jailbreaks, crisis-response edge cases, harmful-advice elicitation), scored against a refusal/escalation rubric — separate from and in addition to the 30-task integration test above.
 
 Deliverable: full production pipeline — LLM + RAG + agentic search + self-consistency + citations. Interactive, grounded, verified Dutch/EN output.
 
