@@ -37,6 +37,15 @@ measurement shows a real gap that RAG + SFT doesn't close.
 - De Vries: interlingual homographs — manageable via a language-ID token in the prompt template; monitor, no plan change.
 - Tanaka: Critique-GRPO +4.5–5% claim — unverified independently, not planned on.
 
+**Council pass, before implementation:** a self-review (Architect/Contrarian/Empiricist/Pragmatist/Strategist/Ethicist archetypes, deliberately put in conflict) surfaced 6 further fixes, applied below:
+
+- Phase 1's "full-model CPT" claim didn't hold up under VRAM math — BF16 weights alone for an 8B model are ~16 GB, already over the 12 GB card before grads/optimizer states/activations. QLoRA r=16 is now the realistic default path for Phase 1, not a rare fallback (1.1, 1.3).
+- Decision Gate now has explicit numeric pass/fail thresholds instead of "short" being undefined.
+- Tokenizer Dutch STRR check moved from Phase 1.2 into Phase 0 (0.7) — it's nearly free and was gating a multi-week conditional branch from behind the Decision Gate.
+- Phase 2a and 2b now include a general-capability regression check (mirrors the replay-buffer logic Phase 1 already had) — narrow math/Dutch SFT and RLVR can quietly wreck general chat ability with nothing in the plan to catch it.
+- Phase 2a.1 now flags that DeepSeek-R1 trace generation is API-based (full R1 doesn't run on this hardware) — budget cost and rate limits before committing to trace counts.
+- Phase 0.6's privacy design simplified: DeepSeek-GUI is a single local-user app, not a hosted multi-tenant service, so a basic delete/export control covers it — the original 30-day auto-expiry/anonymization-pipeline language was solving a problem this deployment doesn't have.
+
 ---
 
 ## GLOBAL REQUIREMENTS (apply to every phase below)
@@ -55,7 +64,8 @@ Goal: validate retrieval + user-memory stack before touching model weights.
 0.4 Download BGE-M3 locally (~1.5 GB). Test: embed 10 queries (5 NL, 5 EN), verify cosine ranking.
 0.5 Agentic search loop: query → BGE-M3 embed → DuckDB top-20 → rerank top-5 → LLM answer + JSON citations. Test 10 prompts (3 NL, 3 EN, 2 code, 2 reasoning).
 0.6 User-memory store (Parquet): `[turn_id, user_assertion, embedding, category, timestamp]`. Extract facts post-turn, retrieve top-3 per new turn as context prefix.
-   **GDPR fix (Okafor):** auto-delete rows after 30 days; do not persist raw sensitive assertions long-term — store category + embedding where the raw text isn't required; run a Polars anonymization pass before any export, debugging dump, or log capture.
+   **Privacy (Council-simplified — single local-user app, not hosted):** the original 30-day auto-expiry + anonymization-pipeline design (Okafor) was solving a multi-tenant-service problem this deployment doesn't have. What actually matters locally: a `--clear-memory` command that wipes the Parquet store, and a `--export-memory` command that dumps it to a readable file — both user-triggered, no automatic retention-window logic needed. Revisit the fuller GDPR design if this ever moves to hosted/multi-user.
+0.7 **Tokenizer STRR check (Council — moved up from Phase 1):** compute Dutch subword-token-to-root ratio (STRR) for the base Qwen3 tokenizer on held-out Dutch text. Target >80%. Near-zero cost, and it gates whether Phase 1 (CPT) is viable at all — measuring it now catches a fatal tokenizer mismatch in week 1–2 instead of after the Decision Gate, weeks later. Record the result; Phase 1.2 references it rather than re-measuring.
 
 Deliverable: full retrieval + citation + memory loop. Retrieval < 200ms. Generation 50–100ms/token.
 
@@ -66,11 +76,12 @@ Deliverable: full retrieval + citation + memory loop. Retrieval < 200ms. Generat
 
 Goal: inject chain-of-thought reasoning from DeepSeek-R1 teacher into the 8B base student, then measure before spending any further compute.
 
-2a.1 Generate training traces via DeepSeek-R1: MATH-500 (500 problems, ~2k tokens/trace), GSM8K (8k samples), AIME 2024 (100 problems). Translate 50% of traces to Dutch. Keep only traces where R1 is correct. Total: 10k–20k (problem, CoT, answer) triples in Parquet. **Decontaminate against MATH-500/GSM8K/AIME public test splits before training (Global Requirements).**
+2a.1 Generate training traces via DeepSeek-R1: MATH-500 (500 problems, ~2k tokens/trace), GSM8K (8k samples), AIME 2024 (100 problems). Translate 50% of traces to Dutch. Keep only traces where R1 is correct. Total: 10k–20k (problem, CoT, answer) triples in Parquet. **Council note: this is API-based generation (full R1 doesn't run on this hardware) — budget API cost and rate limits for 10k–20k generations before committing to the trace count above; trim AIME/GSM8K sample counts if cost is prohibitive rather than discovering it mid-run.** **Decontaminate against MATH-500/GSM8K/AIME public test splits before training (Global Requirements).**
 2a.2 Format: `"Problem: {problem}\n\nReasoning:\n{cot}\n\nAnswer: {answer}"`. Loss mask on CoT + answer tokens only. Seq=2048. 90/10 train/val split.
 2a.3 SFT QLoRA: LR 5e-5, epochs 3, batch 4, accumulate 2. Eval every 500 steps (val perplexity). Duration: 3–5 days.
 2a.4 Merge LoRA → BF16 → quantize Q4_K_M GGUF. Save as `qwen3-8b-cot-distilled-q4.gguf`.
 2a.5 Benchmark: MATH-500 held-out (100 samples) target 70%+, GSM8K (100) target 85%+, 20 Dutch math problems target 60–70%. **Decontaminated per Global Requirements.**
+2a.6 **General-capability regression check (Council — mirrors Phase 1's replay-buffer logic):** before treating Phase 2a as done, spot-check that SFT distillation didn't narrow general chat/instruction-following ability — a small general-purpose eval (30–50 prompts, IFEval/MT-Bench-style, covering non-math instructions) compared against the pre-SFT base model. No formal target; the goal is catching obvious regression (e.g. refusing or mis-formatting plain conversational requests), not a full benchmark.
 
 Deliverable: Qwen3-8B with long-CoT distilled, *without* any CPT step. MATH 70%+, GSM8K 85%+.
 
@@ -84,11 +95,18 @@ Run on the Phase 2a SFT model:
 - **Dutch comprehension check:** MMLU-Lite-nl (≥500 samples, decontaminated), XQuAD-nl, native-fluency spot-check.
 - **Reasoning reliability check:** MATH-500 / GSM8K held-out accuracy + failure-mode breakdown — knowledge gap vs. reasoning-step error vs. format error.
 
+**Numeric thresholds (Council pass — "short" was previously undefined):**
+
+- Dutch acceptable ⇔ MMLU-Lite-nl ≥ 55% AND XQuAD-nl F1 ≥ 70 AND native-fluency spot-check has no major errors. (55% is the floor of Phase 1's own post-CPT target — if the SFT model already clears it, Phase 1 buys nothing.)
+- Reasoning acceptable ⇔ MATH-500 ≥ 70% AND GSM8K ≥ 85% (Phase 2a's own deliverable targets, met).
+- Reasoning short *and reasoning-caused* ⇔ either accuracy target missed AND reasoning-step errors are the majority failure category (>50% of failures) in the breakdown.
+- Reasoning short *but knowledge-caused* (majority failures are knowledge-gap or format errors) → Phase 2b is the wrong fix; revisit Phase 2a data/format instead, don't spend GRPO budget on it.
+
 Decide:
 
 - Both acceptable → **ship RAG + SFT as v1, stop here.** Revisit Phase 1/2b only if production usage surfaces a real gap.
 - Dutch score short → run **Phase 1** (CPT), scoped as below.
-- Reasoning reliability short *and the failures are reasoning errors, not knowledge gaps* → run **Phase 2b** (GRPO), scoped as below.
+- Reasoning reliability short *and reasoning-caused per the breakdown above* → run **Phase 2b** (GRPO), scoped as below.
 - Both short → run Phase 1 first (it's the foundation), then run Phase 2b on the post-CPT SFT model.
 
 ---
@@ -96,14 +114,14 @@ Decide:
 ## PHASE 1: BILINGUAL CONTINUAL PRETRAINING (CONDITIONAL)
 **Only runs if the Decision Gate shows a Dutch comprehension gap RAG + SFT doesn't close.** Goal: adapt the base model to the Dutch/EN corpus and secure native comprehension — without wrecking English ability or scope-creeping into a tokenizer rebuild.
 
-1.1 Corpus: 60–70% EN (FineWeb-Edu, SlimPajama reasoning-heavy, OpenWebMath) / 30–40% NL (Flemish/Dutch news, tech docs, forums, filtered) / 10–15% code. **Target cut to 10–20B tokens (down from 50–100B); quality over volume for NL — drop low-quality forum/web text rather than padding volume for size.** Store in Parquet: `[text, language, domain, quality_score]`.
+1.1 Corpus: 60–70% EN (FineWeb-Edu, SlimPajama reasoning-heavy, OpenWebMath) / 30–40% NL (Flemish/Dutch news, tech docs, forums, filtered) / 10–15% code. Target 10–20B tokens; quality over volume for NL — drop low-quality forum/web text rather than padding volume for size. **This sizing assumed full-model CPT's deeper per-token capacity (see Council correction in 1.3): if QLoRA ends up being the realistic path, reconsider whether 10–20B tokens is still right, or whether QLoRA's lower capacity-per-token argues for a larger, more heavily filtered corpus instead.** Store in Parquet: `[text, language, domain, quality_score]`.
    **Replay buffer (Vasquez):** blend 10–15% original Qwen3 pretraining-distribution data (general English) into every training batch — without it, English MMLU regresses.
-1.2 Tokenizer check: compute Dutch STRR on held-out text. Target >80%. **If below: stop.** Do not retrain the tokenizer as a fallback — a new tokenizer is a new model, not a Phase 1 fix. Sub-80% STRR means re-scoping the entire project around a base model with native NL tokenizer support, not patching this one. (Tokenizer retraining is fully removed as a plan-B option.)
-1.3 Training setup: base Qwen3-8B BF16, **Unsloth full-model continual pretraining (not QLoRA)** with gradient checkpointing — QLoRA doesn't inject the deep morphological knowledge this phase needs. Validate VRAM fit empirically *before* committing to a multi-day run (seq=2048, largest batch that fits, accumulate as needed). **Fallback: if full-model CPT doesn't fit in 12 GB even after reducing seq length/batch, drop back to QLoRA r=16 for Phase 1 rather than stalling the phase — full-model CPT is the preferred approach, not a hard requirement.** LR **5e-5** cosine (down from 2e-4 — CPT LR must be 5–10x lower than pretraining LR). Checkpoint every 2k steps.
-1.4 Run pretraining over the 10–20B token budget. Re-baseline wall-clock once real full-model-CPT throughput is measured (slower per-token than QLoRA, but a smaller corpus). Monitor validation loss + Dutch token perplexity.
+1.2 Tokenizer check: Dutch STRR already measured in Phase 0.7. Target >80%. **If below: stop.** Do not retrain the tokenizer as a fallback — a new tokenizer is a new model, not a Phase 1 fix. Sub-80% STRR means re-scoping the entire project around a base model with native NL tokenizer support, not patching this one. (Tokenizer retraining is fully removed as a plan-B option.)
+1.3 Training setup: base Qwen3-8B BF16. **Council correction: "full-model CPT" doesn't fit a 12 GB card the way the original wording implied — BF16 weights alone for 8B params are ~16 GB, already over budget before grads, optimizer states, or activations, and gradient checkpointing only trims activation memory, not weight/optimizer memory.** Treat full-model CPT as a stretch attempt, not the default: try Unsloth full-model CPT with CPU-offloaded weights/optimizer first, but expect a large throughput hit from PCIe-bound offload (likely 5–20x slower than GPU-resident training, not "slightly slower" as originally assumed) — if that can't finish in a reasonable calendar window, **QLoRA r=16 is the realistic default path for Phase 1, not a rare fallback.** LR **5e-5** cosine either way (down from 2e-4 — CPT LR must be 5–10x lower than pretraining LR). Validate throughput empirically within the first few hundred steps before committing to a multi-day run. Checkpoint every 2k steps.
+1.4 Run pretraining over the 10–20B token budget. Re-baseline wall-clock once real throughput is measured — CPU-offloaded full-model CPT and QLoRA have very different speed profiles; don't carry over the original full-model-CPT estimate. Monitor validation loss + Dutch token perplexity.
 1.5 Eval at end of token budget: Dutch MMLU-Lite (**≥500 samples**, decontaminated), XQuAD-nl. Baseline Qwen3-8B ~50–60%. Target after Phase 1: 55–65%. If gap too large: extend token budget within the 10–20B range, or switch to Qwen3-14B base — do not reach for tokenizer retraining.
 
-Deliverable: Qwen3-8B continual-pretrained (full-model, not LoRA), merged to BF16. Dutch MMLU-Lite +5–10pp vs. baseline, English MMLU not regressed (verified via replay-buffer holdout).
+Deliverable: Qwen3-8B continual-pretrained (full-model via CPU-offload, or QLoRA r=16 — whichever proved viable in 1.3), merged to BF16. Dutch MMLU-Lite +5–10pp vs. baseline, English MMLU not regressed (verified via replay-buffer holdout).
 
 ---
 
@@ -115,6 +133,7 @@ Deliverable: Qwen3-8B continual-pretrained (full-model, not LoRA), merged to BF1
 2b.3 GRPO setup: **G=8–16** rollouts per problem (up from 4–6, needed for stable advantage estimation) at temp 0.7–1.0, compute group advantage, LoRA policy gradient update on top rollouts. **Validate VRAM before committing**: G rollouts at ~2k tokens/trace plus the backward pass on a 12 GB card is tight at G=16 — dry-run a handful of steps at the target seq length first, and if it OOMs, step G down (16→12→8) before cutting batch, since G is what stabilizes the advantage estimate. **Add an explicit length-penalty / token-normalized reward** — without it, sequence length drifts to the max as a known GRPO reward-hacking pathology. LR 1e-5, **KL penalty 0.1–0.2** (up from 0.05 — too low when starting from a strong SFT model, lets the policy drift too far too fast). Batch 2, epochs 2–3. Duration: 7–10 days (re-baseline given the larger G).
 2b.4 Eval: held-out 2k problems, decontaminated. Target: SFT 70% → post-GRPO 80–85% on MATH. Check rollout diversity (no mode collapse) *and* check specifically for length-reward-hacking now that the length-penalty is in place.
 2b.5 Merge RL LoRA → BF16 → Q4_K_M. Save as `qwen3-8b-cot-rlvr-q4.gguf`.
+2b.6 **General-capability regression check (Council):** same spot-check as 2a.6, re-run against the post-GRPO model. RLVR optimizing hard against math/code reward signals is at least as likely to narrow general ability as SFT was — confirm the model still handles plain conversational/non-verifiable requests before shipping it as the new default.
 
 Deliverable: Qwen3-8B with long-CoT SFT + RLVR. MATH 80–85%+, GSM8K 90%+. Reliable verifiable reasoning.
 
@@ -168,6 +187,6 @@ Phase 4: 32k context stable, production model selected from {14B dense, Gemma 4 
 | Qwen3-32B | 18 GB | does not fit | NO |
 | Mixtral 8x7B | 26 GB | does not fit | NO |
 
-**Note:** the QLoRA training-VRAM column above does not apply to Phase 1, which now uses Unsloth full-model CPT instead of QLoRA (see 1.3) — validate that VRAM fit empirically before a multi-day run.
+**Note:** the QLoRA training-VRAM column above is Phase 1's realistic default per the Council correction in 1.3 — BF16 weights alone for an 8B model (~16 GB) exceed the 12 GB card before grads/optimizer states/activations, so full-model CPT requires CPU offload and a much larger slowdown than originally assumed. Validate throughput empirically within the first few hundred steps either way.
 
 NVMe offload: technically possible via `--mmap`, but MoE random expert access = < 5 tok/sec. Not recommended for interactive use. Not needed: 12GB GPU + 32GB RAM covers all models through Phase 4.
