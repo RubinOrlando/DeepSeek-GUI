@@ -33,7 +33,7 @@ measurement shows a real gap that RAG + SFT doesn't close.
 
 - Chen's KV-cache recount (claiming 40 KV-heads): this is the reviewer being wrong, not the plan. Qwen3-14B uses GQA with 8 KV-heads, not 40 query-heads; the original 11.1 GB @ 32k Q8 KV figure stands. No change made.
 - Chen: 15% VRAM overhead buffer (12 GB → 10.2 GB effective), and benchmarking KoboldCpp as an alternative to llama.cpp at 32k context — sensible, but left as an implementation note (Phase 4) rather than a numbers rewrite, since it doesn't change any go/no-go threshold.
-- De Vries: cultural misalignment — real, low priority for v1.
+- ~~De Vries: cultural misalignment — real, low priority for v1.~~ **Un-deferred in Council round 2** (below) — now addressed via Phase 2a's Bruges-model counseling-SFT slice, Phase 3.2's natively-curated DPO, and Phase 3.4's red-team pass. No longer treated as low priority — it was a contradiction to defer this while running a dedicated Dutch-culture safety DPO set and crisis red-team pass anyway.
 - De Vries: interlingual homographs — manageable via a language-ID token in the prompt template; monitor, no plan change.
 - Tanaka: Critique-GRPO +4.5–5% claim — unverified independently, not planned on.
 
@@ -45,6 +45,13 @@ measurement shows a real gap that RAG + SFT doesn't close.
 - Phase 2a and 2b now include a general-capability regression check (mirrors the replay-buffer logic Phase 1 already had) — narrow math/Dutch SFT and RLVR can quietly wreck general chat ability with nothing in the plan to catch it.
 - Phase 2a.1 now flags that DeepSeek-R1 trace generation is API-based (full R1 doesn't run on this hardware) — budget cost and rate limits before committing to trace counts.
 - Phase 0.6's privacy design simplified: DeepSeek-GUI is a single local-user app, not a hosted multi-tenant service, so a basic delete/export control covers it — the original 30-day auto-expiry/anonymization-pipeline language was solving a problem this deployment doesn't have.
+
+**Council round 2 (Bruges Model synthesis):** the user ran their own 3-role council on this plan (Hardware Realist / NLP Purist / Product Owner) and surfaced a real domain mismatch: Phase 2b's GRPO time was scoped entirely to math/code, which doesn't serve the counseling domain this app actually targets. Resolution, after checking that GRPO/RLVR's reward mechanism requires automated verifiable correctness (which counseling tasks don't have):
+
+- **Phase 2b stays math/code-only** — reframed as general reasoning-reliability, not counseling skill. No RL is used for the counseling domain at all; turning template-adherence into an RL reward risks reward-hacking on surface phrasing over genuine engagement.
+- **Phase 2a gains a dedicated counseling-SFT slice** curated to **Het Brugs Model** (Isebaert, Korzybski Institute) — a real, published solution-focused brief-therapy structure, verified rather than assumed (see 2a.1b). This is what actually carries counseling-domain competence: SFT/DPO imitate bounded structured templates well, no RL needed.
+- **Phase 3.2's DPO pairs**: flat 5,000 replaced with a flexible **2,000–5,000** range — count alone didn't fix the real concern (where would 5,000 culturally-correct pairs even come from); the fix is a mandatory native-Dutch/Flemish curation requirement, not a number.
+- **Phase 0.6 gains a counseling-specific structured memory tier** (0.6, new bullet) populated directly by the Bruges-model template's own elicitation fields — a much simpler complement to the general embedding-based store.
 
 ---
 
@@ -65,6 +72,7 @@ Goal: validate retrieval + user-memory stack before touching model weights.
 0.5 Agentic search loop: query → BGE-M3 embed → DuckDB top-20 → rerank top-5 → LLM answer + JSON citations. Test 10 prompts (3 NL, 3 EN, 2 code, 2 reasoning).
 0.6 User-memory store (Parquet): `[turn_id, user_assertion, embedding, category, timestamp]`. Extract facts post-turn, retrieve top-3 per new turn as context prefix.
    **Privacy (Council-simplified — single local-user app, not hosted):** the original 30-day auto-expiry + anonymization-pipeline design (Okafor) was solving a multi-tenant-service problem this deployment doesn't have. What actually matters locally: a `--clear-memory` command that wipes the Parquet store, and a `--export-memory` command that dumps it to a readable file — both user-triggered, no automatic retention-window logic needed. Revisit the fuller GDPR design if this ever moves to hosted/multi-user.
+   **Counseling-domain memory tier (Council round 2):** for counseling-domain conversations specifically, maintain a compact structured `session-info.md` — fields: current goal, exceptions/resources identified, latest scale rating, agreed next step — populated directly from the Bruges-model conversational structure (see Phase 2a.1b) and reloaded in full each turn. No embedding search needed here, since the field set is small and bounded by the model's own limited tactics; this sits alongside, not instead of, the general embedding-based store above for non-counseling topics.
 0.7 **Tokenizer STRR check (Council — moved up from Phase 1):** compute Dutch subword-token-to-root ratio (STRR) for the base Qwen3 tokenizer on held-out Dutch text. Target >80%. Near-zero cost, and it gates whether Phase 1 (CPT) is viable at all — measuring it now catches a fatal tokenizer mismatch in week 1–2 instead of after the Decision Gate, weeks later. Record the result; Phase 1.2 references it rather than re-measuring.
 
 Deliverable: full retrieval + citation + memory loop. Retrieval < 200ms. Generation 50–100ms/token.
@@ -77,13 +85,14 @@ Deliverable: full retrieval + citation + memory loop. Retrieval < 200ms. Generat
 Goal: inject chain-of-thought reasoning from DeepSeek-R1 teacher into the 8B base student, then measure before spending any further compute.
 
 2a.1 Generate training traces via DeepSeek-R1: MATH-500 (500 problems, ~2k tokens/trace), GSM8K (8k samples), AIME 2024 (100 problems). Translate 50% of traces to Dutch. Keep only traces where R1 is correct. Total: 10k–20k (problem, CoT, answer) triples in Parquet. **Council note: this is API-based generation (full R1 doesn't run on this hardware) — budget API cost and rate limits for 10k–20k generations before committing to the trace count above; trim AIME/GSM8K sample counts if cost is prohibitive rather than discovering it mid-run.** **Decontaminate against MATH-500/GSM8K/AIME public test splits before training (Global Requirements).**
-2a.2 Format: `"Problem: {problem}\n\nReasoning:\n{cot}\n\nAnswer: {answer}"`. Loss mask on CoT + answer tokens only. Seq=2048. 90/10 train/val split.
+2a.1b **Counseling-domain SFT slice (Council round 2 — Bruges Model):** curate conversations following **Het Brugs Model** / solution-focused brief therapy structure (Isebaert, Korzybski Institute — verified, published methodology, not assumed) — goal elicitation, exception-finding, scaling questions, future-pacing, client-led agency throughout. Native-curated: reviewed by someone familiar with Dutch/Flemish counseling norms, not LLM-generated-and-trusted (same bar as Phase 3.2). The model's bounded set of tactics keeps full conversations under ~8k tokens. Format as explicit multi-turn dialogue, loss-masked on assistant turns (same masking principle as 2a.2), trained at **seq=8192 for this slice** — don't reuse the 2048 setting below, it would truncate full sessions. This structured template both instills domain-specific reasoning (assess → goal → exceptions → scale → next step — an analogous scaffold to math CoT, not the same content) and the user-centric stance, and structures each session so goal/exceptions/scale/next-step can be extracted directly into the Phase 0.6 counseling memory tier.
+2a.2 Format (math/reasoning slice): `"Problem: {problem}\n\nReasoning:\n{cot}\n\nAnswer: {answer}"`. Loss mask on CoT + answer tokens only. Seq=2048. 90/10 train/val split.
 2a.3 SFT QLoRA: LR 5e-5, epochs 3, batch 4, accumulate 2. Eval every 500 steps (val perplexity). Duration: 3–5 days.
 2a.4 Merge LoRA → BF16 → quantize Q4_K_M GGUF. Save as `qwen3-8b-cot-distilled-q4.gguf`.
-2a.5 Benchmark: MATH-500 held-out (100 samples) target 70%+, GSM8K (100) target 85%+, 20 Dutch math problems target 60–70%. **Decontaminated per Global Requirements.**
+2a.5 Benchmark: MATH-500 held-out (100 samples) target 70%+, GSM8K (100) target 85%+, 20 Dutch math problems target 60–70%. **Decontaminated per Global Requirements.** **Counseling slice: spot-check 20 sample sessions for Bruges-model adherence (solution-focus maintained, no unsolicited advice-giving) — directional, not decision-grade, per Global Requirements' N<500 rule.**
 2a.6 **General-capability regression check (Council — mirrors Phase 1's replay-buffer logic):** before treating Phase 2a as done, spot-check that SFT distillation didn't narrow general chat/instruction-following ability — a small general-purpose eval (30–50 prompts, IFEval/MT-Bench-style, covering non-math instructions) compared against the pre-SFT base model. No formal target; the goal is catching obvious regression (e.g. refusing or mis-formatting plain conversational requests), not a full benchmark.
 
-Deliverable: Qwen3-8B with long-CoT distilled, *without* any CPT step. MATH 70%+, GSM8K 85%+.
+Deliverable: Qwen3-8B with long-CoT math distillation *and* Bruges-model counseling-SFT, without any CPT step. MATH 70%+, GSM8K 85%+.
 
 ---
 
@@ -127,6 +136,7 @@ Deliverable: Qwen3-8B continual-pretrained (full-model via CPU-offload, or QLoRA
 
 ## PHASE 2B: RLVR WITH GRPO (CONDITIONAL)
 **Only runs if the Decision Gate shows a reasoning-reliability gap, and failure analysis confirms it's reasoning errors rather than knowledge gaps.** Goal: reinforce correct reasoning via RL on verifiable tasks.
+**Scope note (Council round 2):** stays math/code-only, deliberately. RLVR's reward mechanism needs automated, symbolic verifiable correctness — the counseling domain doesn't have that, and forcing it (e.g. a template-adherence classifier reward) risks reward-hacking on surface phrasing over genuine engagement. Counseling-domain alignment is handled entirely by Phase 2a's Bruges-model SFT slice and Phase 3.2's DPO — not by RL.
 
 2b.1 Prepare RLVR dataset: MATH-500, GSM8K, code with unit tests. Only tasks with automated verifiable correctness. 5k–10k problems. 80/20 train/eval. Decontaminate per Global Requirements.
 2b.2 Reward function, refined for less sparse gradient signal (Tanaka): math correct = +1 (symbolic match), wrong but correctly formatted = -0.5, wrong format = -1. Code correct = all unit tests pass = +1.
@@ -143,7 +153,7 @@ Deliverable: Qwen3-8B with long-CoT SFT + RLVR. MATH 80–85%+, GSM8K 90%+. Reli
 Goal: add self-consistency, DPO for subjective tasks, citations wired into RAG.
 
 3.1 Self-consistency: N=5 inference passes per hard problem (temp 0.8), majority-vote on extracted answers. Test on MATH hold-out (≥500 samples where available, decontaminated — bumped from the original 20-sample test per Global Requirements): expect +3–8pp.
-3.2 DPO (subjective tasks only): **5,000 Dutch preference pairs** for counseling/safety domains (chosen vs rejected) — raised from the original 500–1000, which Okafor flagged as too few to align a counseling-capable model. LR 5e-6, 1 epoch. Merge + quantize.
+3.2 DPO (subjective tasks only): **2,000–5,000 Dutch preference pairs** for counseling/safety domains — raised from the original 500–1000, which Okafor flagged as too few. **Council round 2 correction: count alone doesn't fix sourcing quality** — pairs must be reviewed/curated by someone familiar with Dutch/Flemish counseling norms, not LLM-generated-and-trusted. Chosen/rejected criteria: chosen = Bruges-model-adherent (solution-focused, client-led goal-setting), rejected = unsolicited advice-giving or causal problem-analysis. LR 5e-6, 1 epoch. Merge + quantize.
 3.3 Citation grounding: force LLM JSON output with doc_id citations. Eval: 20 retrieval tasks, target 80%+ cited docs relevant.
 3.4 Integration test: 30 mixed tasks (10 reasoning, 10 retrieval, 10 counseling). Measure latency, accuracy, citation quality, safety. **This is not a safety sign-off.** Add a dedicated red-team pass before any external release: adversarial prompts targeting the counseling/safety domain specifically (jailbreaks, crisis-response edge cases, harmful-advice elicitation), scored against a refusal/escalation rubric — separate from and in addition to the 30-task integration test above.
 
